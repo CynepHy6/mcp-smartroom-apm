@@ -1,0 +1,11 @@
+# Virtual environment
+venv/
+
+# Environment variables
+.env
+
+# Log files
+mcp-apm-server.log
+
+# Python cache
+__pycache__/ 

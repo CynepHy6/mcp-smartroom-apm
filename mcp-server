@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""
+Кроссплатформенный запуск MCP APM сервера
+Совместимо с Linux, macOS и Windows
+"""
+
+import os
+import sys
+import subprocess
+import platform
+from pathlib import Path
+
+def main():
+    script_dir = Path(__file__).parent.absolute()
+    os.chdir(script_dir)
+    
+    system = platform.system()
+    
+    venv_python = script_dir / "venv" / ("Scripts" if system == "Windows" else "bin") / ("python.exe" if system == "Windows" else "python")
+    server_script = script_dir / "mcp_apm_server.py"
+    
+    if not venv_python.exists():
+        print("Ошибка: виртуальное окружение не найдено")
+        if system == "Windows":
+            print("Запустите: python setup.py")
+        else:
+            print("Запустите: python3 setup.py")
+        sys.exit(1)
+    
+    if not server_script.exists():
+        print(f"Ошибка: файл mcp_apm_server.py не найден в {script_dir}")
+        sys.exit(1)
+    
+    try:
+        subprocess.run([str(venv_python), str(server_script)] + sys.argv[1:])
+    except KeyboardInterrupt:
+        print("\nСервер остановлен")
+    except Exception as e:
+        print(f"Ошибка запуска: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main() 

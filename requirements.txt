@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-dotenv
+pyyaml
+elasticsearch==8.12.0
+httpx
+mcp
+aiohttp

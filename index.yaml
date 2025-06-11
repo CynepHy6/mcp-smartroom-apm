@@ -1,0 +1,14 @@
+logs_videocall:
+  events:
+    - tech-summary-minute: отчет по МОС за минуту
+    - webrtcIssue: проблемы с WebRTC, аудио, видео, скриншеринг
+  appSessionId: Уникальный ID сессии приложения, хэш комнаты
+  event: "Тип события: tech-summary-minute"
+  "@timestamp": Время события
+  userId: ID пользователя
+  userRole: Роль пользователя
+  "details.issues.reason": Причина проблемы
+  "details.summary.publisher.publisherMos.avgJitter": Среднее значение задержки
+  "details.summary.publisher.publisherMos.mos": МОС
+  "details.summary.publisher.publisherMos.packetsLoss": Пакеты потерянные
+  "details.summary.publisher.publisherMos.rtt": Среднее время отклика
