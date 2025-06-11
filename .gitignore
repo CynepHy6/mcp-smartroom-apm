@@ -9,3 +9,6 @@ mcp-apm-server.log
 
 # Python cache
 __pycache__/ 
+
+# Plot files
+plots/

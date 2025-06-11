@@ -18,6 +18,22 @@ import mcp.server.stdio
 from mcp.server.lowlevel import Server as LowLevelServer
 from mcp.server.models import InitializationOptions
 from urllib.parse import urlparse
+from datetime import datetime
+import base64
+import io
+import hashlib
+from pathlib import Path
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Используем backend без GUI
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    import pandas as pd
+    import numpy as np
+    PLOTTING_AVAILABLE = True
+except ImportError:
+    PLOTTING_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +44,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+if not PLOTTING_AVAILABLE:
+    logger.warning("Matplotlib/pandas не установлены. Функция построения графиков недоступна.")
 
 load_dotenv()
 INDEX_CONFIG_PATH = "index.yaml"
@@ -128,7 +147,7 @@ server = Server("apm-server")
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    tools = [
         Tool(
             name="list_indexes",
             description="Получить список доступных индексов и их описание",
@@ -150,6 +169,34 @@ async def list_tools() -> list[Tool]:
             }
         )
     ]
+    
+    if PLOTTING_AVAILABLE:
+        tools.append(
+            Tool(
+                name="create_plot",
+                description="Создать график по данным из Elasticsearch",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "string", "description": "Имя индекса"},
+                        "filters": {"type": "object", "description": "Фильтры запроса"},
+                        "plot_type": {
+                            "type": "string", 
+                            "enum": ["line", "scatter", "bar", "mos_timeline", "metrics_comparison"],
+                            "description": "Тип графика"
+                        },
+                        "x_field": {"type": "string", "description": "Поле для оси X (обычно @timestamp)"},
+                        "y_field": {"type": "string", "description": "Поле для оси Y"},
+                        "group_by": {"type": "string", "description": "Поле для группировки (например, userId)", "default": None},
+                        "title": {"type": "string", "description": "Заголовок графика", "default": "График"},
+                        "size": {"type": "integer", "description": "Размер выборки", "default": 100}
+                    },
+                    "required": ["index", "filters", "plot_type", "x_field", "y_field"]
+                }
+            )
+        )
+    
+    return tools
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
@@ -193,6 +240,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type="text",
                 text=result_text
             )]
+        elif name == "create_plot":
+            if not PLOTTING_AVAILABLE:
+                return [TextContent(type="text", text="Ошибка: matplotlib/pandas не установлены")]
+            
+            index = arguments.get("index")
+            filters = arguments.get("filters", {})
+            plot_type = arguments.get("plot_type")
+            x_field = arguments.get("x_field")
+            y_field = arguments.get("y_field")
+            group_by = arguments.get("group_by")
+            title = arguments.get("title", "График")
+            size = arguments.get("size", 100)
+            
+            # Получаем данные из Elasticsearch
+            result = await es_manager.query_index(index, filters, size, 0, [{"@timestamp": {"order": "asc"}}])
+            
+            # Создаем график
+            plot_result = await create_plot_from_data(
+                result, plot_type, x_field, y_field, group_by, title
+            )
+            
+            return [TextContent(type="text", text=plot_result)]
         else:
             return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
     except Exception as e:
@@ -206,8 +275,12 @@ def show_help():
     print("  mcp-apm-mcp-server --help           - Показать эту справку\n")
     print("Доступные инструменты MCP:")
     print("  • list_indexes   - Список индексов и их описание")
-    print("  • query_index    - Выполнить запрос к индексу Elasticsearch\n")
-    print("Конфигурация:")
+    print("  • query_index    - Выполнить запрос к индексу Elasticsearch")
+    if PLOTTING_AVAILABLE:
+        print("  • create_plot    - Создать график по данным из Elasticsearch")
+    else:
+        print("  • create_plot    - НЕДОСТУПНО (нет matplotlib/pandas)")
+    print("\nКонфигурация:")
     print("  index.yaml - описание индексов")
     print("  .env       - креды для Elasticsearch")
 
@@ -260,6 +333,188 @@ def filter_source_fields(source: Dict[str, Any], allowed_fields: List[str]) -> D
                 set_nested_value(filtered, field, value)
     
     return filtered
+
+def get_nested_value(obj: Dict[str, Any], path: str) -> Any:
+    """Получает значение по пути с точками"""
+    keys = path.split('.')
+    current = obj
+    for key in keys:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current
+
+async def create_plot_from_data(es_result: Dict[str, Any], plot_type: str, x_field: str, y_field: str, group_by: Optional[str], title: str) -> str:
+    """Создает график по данным из Elasticsearch и сохраняет в файл"""
+    if not PLOTTING_AVAILABLE:
+        return "Ошибка: matplotlib/pandas не установлены"
+    
+    try:
+        # Извлекаем данные
+        records = []
+        for hit in es_result.get('hits', {}).get('hits', []):
+            source = hit['_source']
+            
+            # Получаем значения полей
+            x_value = get_nested_value(source, x_field) if '.' in x_field else source.get(x_field)
+            y_value = get_nested_value(source, y_field) if '.' in y_field else source.get(y_field)
+            group_value = get_nested_value(source, group_by) if group_by and '.' in group_by else source.get(group_by) if group_by else None
+            
+            if x_value is not None and y_value is not None:
+                record = {
+                    'x': x_value,
+                    'y': y_value,
+                    'group': group_value
+                }
+                records.append(record)
+        
+        if not records:
+            return "Нет данных для построения графика"
+        
+        # Создаем DataFrame
+        df = pd.DataFrame(records)
+        
+        # Обрабатываем временные данные
+        if x_field == '@timestamp' or 'timestamp' in x_field.lower():
+            df['x'] = pd.to_datetime(df['x'])
+        
+        # Настройка графика
+        plt.figure(figsize=(12, 8))
+        
+        if plot_type == "mos_timeline":
+            # Специальный график для МОС
+            if group_by:
+                groups = df['group'].unique()
+                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+                
+                for i, group in enumerate(groups):
+                    group_data = df[df['group'] == group].sort_values('x')
+                    plt.plot(group_data['x'], group_data['y'], 
+                            marker='o', markersize=4, linewidth=2,
+                            color=colors[i % len(colors)],
+                            label=f'{group_by}: {group}')
+                
+                plt.legend()
+            else:
+                plt.plot(df['x'], df['y'], marker='o', markersize=4, linewidth=2)
+            
+            plt.ylim(3.5, 5.0)
+            plt.axhline(y=4.0, color='red', linestyle='--', alpha=0.5, label='Хорошее качество (4.0)')
+            plt.axhline(y=4.5, color='green', linestyle='--', alpha=0.5, label='Отличное качество (4.5)')
+            
+        elif plot_type == "line":
+            if group_by:
+                groups = df['group'].unique()
+                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+                
+                for i, group in enumerate(groups):
+                    group_data = df[df['group'] == group].sort_values('x')
+                    plt.plot(group_data['x'], group_data['y'], 
+                            marker='o', markersize=3, linewidth=1.5,
+                            color=colors[i % len(colors)],
+                            label=f'{group_by}: {group}')
+                
+                plt.legend()
+            else:
+                plt.plot(df['x'], df['y'], marker='o', markersize=3, linewidth=1.5)
+                
+        elif plot_type == "scatter":
+            if group_by:
+                groups = df['group'].unique()
+                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+                
+                for i, group in enumerate(groups):
+                    group_data = df[df['group'] == group]
+                    plt.scatter(group_data['x'], group_data['y'], 
+                              color=colors[i % len(colors)],
+                              label=f'{group_by}: {group}', alpha=0.7)
+                
+                plt.legend()
+            else:
+                plt.scatter(df['x'], df['y'], alpha=0.7)
+                
+        elif plot_type == "bar":
+            if group_by:
+                grouped = df.groupby('group')['y'].mean()
+                plt.bar(range(len(grouped)), grouped.values)
+                plt.xticks(range(len(grouped)), grouped.index, rotation=45)
+            else:
+                # Группируем по X и берем среднее Y
+                grouped = df.groupby('x')['y'].mean()
+                plt.bar(range(len(grouped)), grouped.values)
+                plt.xticks(range(len(grouped)), grouped.index, rotation=45)
+        
+        # Настройка осей и заголовков
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.xlabel(x_field, fontsize=12)
+        plt.ylabel(y_field, fontsize=12)
+        
+        # Форматирование временной оси
+        if x_field == '@timestamp' or 'timestamp' in x_field.lower():
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            plt.xticks(rotation=45)
+        
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # Создаем уникальное имя файла
+        now = datetime.now()
+        year = now.strftime("%Y")
+        month = now.strftime("%m")
+        
+        # Создаем хеш от параметров для уникальности
+        params_str = f"{plot_type}_{x_field}_{y_field}_{group_by}_{title}_{len(df)}"
+        file_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
+        
+        # Создаем понятное имя файла
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_title = safe_title.replace(' ', '_')[:30]  # Ограничиваем длину
+        
+        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{safe_title}_{plot_type}_{file_hash}.png"
+        
+        # Создаем структуру папок
+        plots_dir = Path("plots") / year / month
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        file_path = plots_dir / filename
+        
+        # Сохраняем график в файл
+        plt.savefig(file_path, format='png', dpi=150, bbox_inches='tight')
+        
+        # Также сохраняем в base64 для обратной совместимости
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+        buffer.seek(0)
+        plot_base64 = base64.b64encode(buffer.getvalue()).decode()
+        plt.close()
+        
+        # Статистика
+        stats = {
+            "total_points": len(df),
+            "x_range": [str(df['x'].min()), str(df['x'].max())],
+            "y_range": [float(df['y'].min()), float(df['y'].max())],
+            "y_mean": float(df['y'].mean()),
+            "y_std": float(df['y'].std())
+        }
+        
+        if group_by:
+            stats["groups"] = df['group'].unique().tolist()
+        
+        result = {
+            "status": "success",
+            "file_path": str(file_path.absolute()),
+            "file_size": file_path.stat().st_size,
+            "plot_base64": plot_base64,
+            "statistics": stats,
+            "message": f"График создан успешно и сохранен в {file_path.absolute()}. Тип: {plot_type}, точек данных: {len(df)}"
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания графика: {e}")
+        return f"Ошибка создания графика: {str(e)}"
 
 async def main():
     import sys
