@@ -1,39 +1,24 @@
 #!/usr/bin/env python3
 """
 MCP сервер для безопасной работы с Elasticsearch (APM)
-Работает через MCP Server, поддерживает инструменты для работы с индексами и запросами
+Рефакторенная версия с разделением на модули
 """
 
 import os
 import logging
 import json
-import yaml
 import asyncio
-from typing import Dict, Any, List, Optional, Sequence
+from typing import List
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from elasticsearch import AsyncElasticsearch, exceptions as es_exceptions
 from mcp.server import Server
-from mcp.types import Tool, TextContent, LoggingLevel
+from mcp.types import Tool, TextContent
 import mcp.server.stdio
-from mcp.server.lowlevel import Server as LowLevelServer
-from mcp.server.models import InitializationOptions
-from urllib.parse import urlparse
-from datetime import datetime
-import base64
-import io
-import hashlib
-from pathlib import Path
 
-try:
-    import matplotlib
-    matplotlib.use('Agg')  # Используем backend без GUI
-    import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
-    import pandas as pd
-    import numpy as np
-    PLOTTING_AVAILABLE = True
-except ImportError:
-    PLOTTING_AVAILABLE = False
+from src.config_utils import load_index_config
+from src.elasticsearch_client import ElasticsearchManager
+from src.data_processing import process_elasticsearch_data
+from src.plotting import PlotManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,112 +30,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-if not PLOTTING_AVAILABLE:
-    logger.warning("Matplotlib/pandas не установлены. Функция построения графиков недоступна.")
-
 load_dotenv()
-INDEX_CONFIG_PATH = "index.yaml"
-if not os.path.exists(INDEX_CONFIG_PATH):
-    logger.error(f"Файл {INDEX_CONFIG_PATH} не найден")
-    raise FileNotFoundError(f"File {INDEX_CONFIG_PATH} not found")
 
-with open(INDEX_CONFIG_PATH, encoding="utf-8") as f:
-    raw_config = yaml.safe_load(f) or {}
+# Загружаем конфигурацию
+INDEX_CONFIG = load_index_config()
 
-INDEX_CONFIG = {}
-for index_name, content in raw_config.items():
-    if not isinstance(content, dict):
-        logger.warning(f"Некорректная структура для индекса '{index_name}' в index.yaml")
-        continue
-    fields = {}
-    events = []
-    if "events" in content and isinstance(content["events"], list):
-        for item in content["events"]:
-            if isinstance(item, dict):
-                for key, value in item.items():
-                    events.append({"name": key, "description": value})
-            elif isinstance(item, str):
-                events.append({"name": item, "description": ""})
-    if "fields" in content and isinstance(content["fields"], dict):
-        fields = content["fields"]
-    else:
-        fields = {k: v for k, v in content.items() if k != "events"}
-    INDEX_CONFIG[index_name] = {
-        "fields": fields,
-        "events": events
-    }
-class ElasticsearchManager:
-    def __init__(self):
-        self.client = AsyncElasticsearch(
-            hosts=[os.getenv("APM_BASE_URL")],
-            basic_auth=(os.getenv("APM_USERNAME"), os.getenv("APM_PASSWORD")),
-            request_timeout=int(os.getenv("APM_TIMEOUT", "30"))
-        )
-
-    async def list_indexes(self) -> List[Dict[str, Any]]:
-        """Список индексов и их описание"""
-        result = []
-        for idx, data in INDEX_CONFIG.items():
-            result.append({
-                "name": idx,
-                "fields": data["fields"],
-                "events": data["events"]
-            })
-        return result
-
-    async def query_index(self, index: str, filters: Dict[str, Any], size: int = 100, from_: int = 0, sort: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        if index not in INDEX_CONFIG:
-            raise ValueError(f"Индекс '{index}' не найден в index.yaml")
-        
-        if "bool" in filters or "match" in filters or "term" in filters or "range" in filters:
-            query_body = {
-                "query": filters,
-                "size": size,
-                "from": from_
-            }
-        else:
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": []
-                    }
-                },
-                "size": size,
-                "from": from_
-            }
-            for key, value in filters.items():
-                if isinstance(value, dict) and ("gte" in value or "lte" in value):
-                    query_body["query"]["bool"]["must"].append({
-                        "range": {key: value}
-                    })
-                else:
-                    query_body["query"]["bool"]["must"].append({
-                        "term": {key: value}
-                    })
-        
-        if sort:
-            query_body["sort"] = sort
-            
-        logger.info(f"Elasticsearch query to index '{index}': {query_body}")
-        try:
-            result = await self.client.search(index=index, body=query_body)
-            return result.body
-        except es_exceptions.AuthenticationException:
-            raise RuntimeError("Ошибка аутентификации Elasticsearch")
-        except es_exceptions.ConnectionError:
-            raise RuntimeError("Ошибка подключения к Elasticsearch")
-        except Exception as e:
-            raise RuntimeError(f"Ошибка Elasticsearch: {e}")
-
+# Инициализируем менеджеры
 es_manager = ElasticsearchManager()
+plot_manager = PlotManager()
 server = Server("apm-server")
+
+def get_data_retention_info():
+    """Получить информацию о доступном периоде данных"""
+    now = datetime.now()
+    retention_days = 20
+    oldest_available = now - timedelta(days=retention_days)
+    return f"ВАЖНО: логи хранятся не более {retention_days} дней. Данные доступны с {oldest_available.strftime('%Y-%m-%d')} по {now.strftime('%Y-%m-%d')}. Поиск данных старше этого периода не даст результатов"
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
+    """Список доступных инструментов MCP"""
+    
     tools = [
         Tool(
             name="list_indexes",
             description="Получить список доступных индексов и их описание",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="get_data_retention_info",
+            description="Получить информацию о доступном периоде данных в Elasticsearch. ВАЖНО: логи хранятся не более 20 дней. Если наобходимо получить данные по дате, то сначала надо получить информацию о доступном периоде данных",
             inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
@@ -170,7 +79,7 @@ async def list_tools() -> list[Tool]:
         )
     ]
     
-    if PLOTTING_AVAILABLE:
+    if plot_manager.is_available():
         tools.append(
             Tool(
                 name="create_plot",
@@ -200,48 +109,43 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    """Обработчик вызовов инструментов MCP"""
     try:
         if name == "list_indexes":
-            result = await es_manager.list_indexes()
+            result = await es_manager.list_indexes(INDEX_CONFIG)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
+            
+        elif name == "get_data_retention_info":
+            return [TextContent(type="text", text=get_data_retention_info())]
+            
         elif name == "query_index":
             index = arguments.get("index")
             filters = arguments.get("filters", {})
             size = arguments.get("size", 100)
             from_ = arguments.get("from_", 0)
             sort = arguments.get("sort")
-            result = await es_manager.query_index(index, filters, size, from_, sort)
+            
+            result = await es_manager.query_index(
+                index, filters, size, from_, sort, INDEX_CONFIG
+            )
+            
+            # Обработка данных: дедупликация + алиасы
+            result = process_elasticsearch_data(result, index, INDEX_CONFIG)
+            
             logger.info(f"Query result size: {len(str(result))} characters")
             if isinstance(result, dict) and 'hits' in result:
                 logger.info(f"Hits count: {len(result['hits']['hits'])}")
             
-            allowed_fields = get_configured_fields(index)
+            # Добавляем информацию о ретенции в начало ответа
+            retention_info = get_data_retention_info()
+            result_text = f"{retention_info}\n\n" + json.dumps(result, ensure_ascii=False, indent=2, default=str)
+            return [TextContent(type="text", text=result_text)]
             
-            if allowed_fields and isinstance(result, dict) and 'hits' in result and 'hits' in result['hits']:
-                logger.info(f"Filtering fields according to config. Allowed fields: {allowed_fields}")
-                original_size = len(str(result))
-                for hit in result['hits']['hits']:
-                    if '_source' in hit:
-                        original_source_size = len(str(hit['_source']))
-                        hit['_source'] = filter_source_fields(hit['_source'], allowed_fields)
-                        filtered_source_size = len(str(hit['_source']))
-                        logger.info(f"Filtered source: {original_source_size} -> {filtered_source_size} chars")
-                new_size = len(str(result))
-                logger.info(f"Total filtering: {original_size} -> {new_size} chars")
-            else:
-                logger.info(f"Skipping filtering: allowed_fields={bool(allowed_fields)}")
-            
-            result_text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
-            logger.info(f"JSON serialization successful, length: {len(result_text)}")
-            return [TextContent(
-                type="text",
-                text=result_text
-            )]
         elif name == "create_plot":
-            if not PLOTTING_AVAILABLE:
+            if not plot_manager.is_available():
                 return [TextContent(type="text", text="Ошибка: matplotlib/pandas не установлены")]
             
             index = arguments.get("index")
@@ -254,269 +158,54 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             size = arguments.get("size", 100)
             
             # Получаем данные из Elasticsearch
-            result = await es_manager.query_index(index, filters, size, 0, [{"@timestamp": {"order": "asc"}}])
+            result = await es_manager.query_index(
+                index, filters, size, 0, [{"@timestamp": {"order": "asc"}}], INDEX_CONFIG
+            )
             
             # Создаем график
-            plot_result = await create_plot_from_data(
+            plot_result = await plot_manager.create_plot_from_data(
                 result, plot_type, x_field, y_field, group_by, title
             )
             
-            return [TextContent(type="text", text=plot_result)]
+            # Добавляем информацию о ретенции в начало ответа
+            retention_info = get_data_retention_info()
+            final_result = f"{retention_info}\n\n{plot_result}"
+            return [TextContent(type="text", text=final_result)]
+            
         else:
             return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
+            
     except Exception as e:
         logger.error(f"Ошибка выполнения инструмента {name}: {e}")
         return [TextContent(type="text", text=f"Ошибка: {str(e)}")]
 
 def show_help():
-    print("MCP сервер для работы с Elasticsearch (APM)\n")
+    """Показывает справку по использованию"""
+    print("MCP сервер для работы с Elasticsearch (APM) - РЕФАКТОРЕННАЯ ВЕРСИЯ\n")
     print("Использование:")
-    print("  mcp-apm-mcp-server                 - Запуск MCP сервера")
-    print("  mcp-apm-mcp-server --help           - Показать эту справку\n")
+    print("  python mcp_apm_server_refactored.py     - Запуск MCP сервера")
+    print("  python mcp_apm_server_refactored.py --help - Показать справку\n")
     print("Доступные инструменты MCP:")
     print("  • list_indexes   - Список индексов и их описание")
+    print("  • get_data_retention_info - Получить информацию о доступном периоде данных")
     print("  • query_index    - Выполнить запрос к индексу Elasticsearch")
-    if PLOTTING_AVAILABLE:
+    if plot_manager.is_available():
         print("  • create_plot    - Создать график по данным из Elasticsearch")
     else:
         print("  • create_plot    - НЕДОСТУПНО (нет matplotlib/pandas)")
-    print("\nКонфигурация:")
-    print("  index.yaml - описание индексов")
-    print("  .env       - креды для Elasticsearch")
-
-def get_configured_fields(index_name: str) -> List[str]:
-    """Получает список полей для индекса из конфигурации"""
-    if index_name not in INDEX_CONFIG:
-        return []
     
-    config = INDEX_CONFIG[index_name]
-    if "fields" in config and isinstance(config["fields"], dict):
-        return list(config["fields"].keys())
-    return []
-
-def filter_source_fields(source: Dict[str, Any], allowed_fields: List[str]) -> Dict[str, Any]:
-    """Фильтрует поля _source согласно конфигурации
+    print("\nИнформация о данных:")
+    retention_info = get_data_retention_info()
+    print(f"  {retention_info}")
     
-    Поддерживает как плоские поля, так и вложенные объекты с точечной нотацией.
-    """
-    filtered = {}
-    
-    def get_nested_value(obj: Dict[str, Any], path: str) -> Any:
-        """Получает значение по пути с точками (например, 'details.summary.mos')"""
-        keys = path.split('.')
-        current = obj
-        for key in keys:
-            if isinstance(current, dict) and key in current:
-                current = current[key]
-            else:
-                return None
-        return current
-    
-    def set_nested_value(obj: Dict[str, Any], path: str, value: Any) -> None:
-        """Устанавливает значение по пути с точками"""
-        keys = path.split('.')
-        current = obj
-        for key in keys[:-1]:
-            if key not in current:
-                current[key] = {}
-            current = current[key]
-        current[keys[-1]] = value
-    
-    for field in allowed_fields:
-        # Сначала проверяем плоское поле
-        if field in source:
-            filtered[field] = source[field]
-        else:
-            # Затем проверяем вложенное поле
-            value = get_nested_value(source, field)
-            if value is not None:
-                set_nested_value(filtered, field, value)
-    
-    return filtered
-
-def get_nested_value(obj: Dict[str, Any], path: str) -> Any:
-    """Получает значение по пути с точками"""
-    keys = path.split('.')
-    current = obj
-    for key in keys:
-        if isinstance(current, dict) and key in current:
-            current = current[key]
-        else:
-            return None
-    return current
-
-async def create_plot_from_data(es_result: Dict[str, Any], plot_type: str, x_field: str, y_field: str, group_by: Optional[str], title: str) -> str:
-    """Создает график по данным из Elasticsearch и сохраняет в файл"""
-    if not PLOTTING_AVAILABLE:
-        return "Ошибка: matplotlib/pandas не установлены"
-    
-    try:
-        # Извлекаем данные
-        records = []
-        for hit in es_result.get('hits', {}).get('hits', []):
-            source = hit['_source']
-            
-            # Получаем значения полей
-            x_value = get_nested_value(source, x_field) if '.' in x_field else source.get(x_field)
-            y_value = get_nested_value(source, y_field) if '.' in y_field else source.get(y_field)
-            group_value = get_nested_value(source, group_by) if group_by and '.' in group_by else source.get(group_by) if group_by else None
-            
-            if x_value is not None and y_value is not None:
-                record = {
-                    'x': x_value,
-                    'y': y_value,
-                    'group': group_value
-                }
-                records.append(record)
-        
-        if not records:
-            return "Нет данных для построения графика"
-        
-        # Создаем DataFrame
-        df = pd.DataFrame(records)
-        
-        # Обрабатываем временные данные
-        if x_field == '@timestamp' or 'timestamp' in x_field.lower():
-            df['x'] = pd.to_datetime(df['x'])
-        
-        # Настройка графика
-        plt.figure(figsize=(12, 8))
-        
-        if plot_type == "mos_timeline":
-            # Специальный график для МОС
-            if group_by:
-                groups = df['group'].unique()
-                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-                
-                for i, group in enumerate(groups):
-                    group_data = df[df['group'] == group].sort_values('x')
-                    plt.plot(group_data['x'], group_data['y'], 
-                            marker='o', markersize=4, linewidth=2,
-                            color=colors[i % len(colors)],
-                            label=f'{group_by}: {group}')
-                
-                plt.legend()
-            else:
-                plt.plot(df['x'], df['y'], marker='o', markersize=4, linewidth=2)
-            
-            plt.ylim(3.5, 5.0)
-            plt.axhline(y=4.0, color='red', linestyle='--', alpha=0.5, label='Хорошее качество (4.0)')
-            plt.axhline(y=4.5, color='green', linestyle='--', alpha=0.5, label='Отличное качество (4.5)')
-            
-        elif plot_type == "line":
-            if group_by:
-                groups = df['group'].unique()
-                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-                
-                for i, group in enumerate(groups):
-                    group_data = df[df['group'] == group].sort_values('x')
-                    plt.plot(group_data['x'], group_data['y'], 
-                            marker='o', markersize=3, linewidth=1.5,
-                            color=colors[i % len(colors)],
-                            label=f'{group_by}: {group}')
-                
-                plt.legend()
-            else:
-                plt.plot(df['x'], df['y'], marker='o', markersize=3, linewidth=1.5)
-                
-        elif plot_type == "scatter":
-            if group_by:
-                groups = df['group'].unique()
-                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-                
-                for i, group in enumerate(groups):
-                    group_data = df[df['group'] == group]
-                    plt.scatter(group_data['x'], group_data['y'], 
-                              color=colors[i % len(colors)],
-                              label=f'{group_by}: {group}', alpha=0.7)
-                
-                plt.legend()
-            else:
-                plt.scatter(df['x'], df['y'], alpha=0.7)
-                
-        elif plot_type == "bar":
-            if group_by:
-                grouped = df.groupby('group')['y'].mean()
-                plt.bar(range(len(grouped)), grouped.values)
-                plt.xticks(range(len(grouped)), grouped.index, rotation=45)
-            else:
-                # Группируем по X и берем среднее Y
-                grouped = df.groupby('x')['y'].mean()
-                plt.bar(range(len(grouped)), grouped.values)
-                plt.xticks(range(len(grouped)), grouped.index, rotation=45)
-        
-        # Настройка осей и заголовков
-        plt.title(title, fontsize=14, fontweight='bold')
-        plt.xlabel(x_field, fontsize=12)
-        plt.ylabel(y_field, fontsize=12)
-        
-        # Форматирование временной оси
-        if x_field == '@timestamp' or 'timestamp' in x_field.lower():
-            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            plt.xticks(rotation=45)
-        
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        
-        # Создаем уникальное имя файла
-        now = datetime.now()
-        year = now.strftime("%Y")
-        month = now.strftime("%m")
-        
-        # Создаем хеш от параметров для уникальности
-        params_str = f"{plot_type}_{x_field}_{y_field}_{group_by}_{title}_{len(df)}"
-        file_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
-        
-        # Создаем понятное имя файла
-        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        safe_title = safe_title.replace(' ', '_')[:30]  # Ограничиваем длину
-        
-        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{safe_title}_{plot_type}_{file_hash}.png"
-        
-        # Создаем структуру папок
-        plots_dir = Path("plots") / year / month
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        
-        file_path = plots_dir / filename
-        
-        # Сохраняем график в файл
-        plt.savefig(file_path, format='png', dpi=150, bbox_inches='tight')
-        
-        # Также сохраняем в base64 для обратной совместимости
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
-        buffer.seek(0)
-        plot_base64 = base64.b64encode(buffer.getvalue()).decode()
-        plt.close()
-        
-        # Статистика
-        stats = {
-            "total_points": len(df),
-            "x_range": [str(df['x'].min()), str(df['x'].max())],
-            "y_range": [float(df['y'].min()), float(df['y'].max())],
-            "y_mean": float(df['y'].mean()),
-            "y_std": float(df['y'].std())
-        }
-        
-        if group_by:
-            stats["groups"] = df['group'].unique().tolist()
-        
-        result = {
-            "status": "success",
-            "file_path": str(file_path.absolute()),
-            "file_size": file_path.stat().st_size,
-            "plot_base64": plot_base64,
-            "statistics": stats,
-            "message": f"График создан успешно и сохранен в {file_path.absolute()}. Тип: {plot_type}, точек данных: {len(df)}"
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        logger.error(f"Ошибка создания графика: {e}")
-        return f"Ошибка создания графика: {str(e)}"
+    print("\nСтруктура модулей:")
+    print("  • src/config_utils.py      - утилиты конфигурации")  
+    print("  • src/elasticsearch_client.py - клиент Elasticsearch")
+    print("  • src/data_processing.py   - обработка данных")
+    print("  • src/plotting.py          - создание графиков")
 
 async def main():
+    """Главная функция запуска сервера"""
     import sys
     if len(sys.argv) > 1:
         arg = sys.argv[1]
@@ -527,7 +216,8 @@ async def main():
             print(f"Неизвестный аргумент: {arg}")
             print("Используйте --help для справки")
             return
-    logger.info("Запуск MCP сервера для работы с Elasticsearch (APM)")
+    
+    logger.info("Запуск рефакторенного MCP сервера для работы с Elasticsearch (APM)")
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

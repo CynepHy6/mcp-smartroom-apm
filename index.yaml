@@ -4,11 +4,23 @@ logs_videocall:
     - webrtcIssue: проблемы с WebRTC, аудио, видео, скриншеринг
   appSessionId: Уникальный ID сессии приложения, хэш комнаты
   event: "Тип события: tech-summary-minute"
-  "@timestamp": Время события
+  "@timestamp":
+    description: "Время события. ВАЖНО: Логи хранятся не более 20 дней. Поиск данных старше этого периода может не дать результатов."
   userId: ID пользователя
   userRole: Роль пользователя
-  "details.issues.reason": Причина проблемы
-  "details.summary.publisher.publisherMos.avgJitter": Среднее значение задержки
-  "details.summary.publisher.publisherMos.mos": МОС
-  "details.summary.publisher.publisherMos.packetsLoss": Пакеты потерянные
-  "details.summary.publisher.publisherMos.rtt": Среднее время отклика
+  "details.issues.reason": 
+    description: Причина проблемы
+    alias: issueReason
+    need_dedupe: true
+  "details.summary.publisher.publisherMos.avgJitter": 
+    description: Среднее значение задержки
+    alias: avgJitter
+  "details.summary.publisher.publisherMos.mos":
+    description: МОС
+    alias: mos
+  "details.summary.publisher.publisherMos.packetsLoss":
+    description: Пакеты потерянные
+    alias: packetsLoss
+  "details.summary.publisher.publisherMos.rtt":
+    description: Среднее время отклика  
+    alias: rtt
