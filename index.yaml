@@ -8,7 +8,7 @@ logs_videocall:
     description: "Время события. ВАЖНО: Логи хранятся не более 20 дней. Поиск данных старше этого периода может не дать результатов."
   userId: ID пользователя
   userRole: Роль пользователя
-  "details.issues.reason": 
+  "details.issues[].reason": 
     description: Причина проблемы
     alias: issueReason
     need_dedupe: true

@@ -162,6 +162,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 index, filters, size, 0, [{"@timestamp": {"order": "asc"}}], INDEX_CONFIG
             )
             
+            # Обработка данных: дедупликация + алиасы
+            result = process_elasticsearch_data(result, index, INDEX_CONFIG)
+            
             # Создаем график
             plot_result = await plot_manager.create_plot_from_data(
                 result, plot_type, x_field, y_field, group_by, title

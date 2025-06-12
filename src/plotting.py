@@ -5,9 +5,6 @@
 
 import json
 import logging
-import hashlib
-import base64
-import io
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -57,7 +54,7 @@ class PlotManager:
             if x_field == '@timestamp' or 'timestamp' in x_field.lower():
                 df['x'] = pd.to_datetime(df['x'])
             
-            plot_base64, file_path, stats = self._create_and_save_plot(
+            file_path = self._create_and_save_plot(
                 df, plot_type, x_field, y_field, group_by, title
             )
             
@@ -65,9 +62,7 @@ class PlotManager:
                 "status": "success",
                 "file_path": str(file_path.absolute()),
                 "file_size": file_path.stat().st_size,
-                "plot_base64": plot_base64,
-                "statistics": stats,
-                "message": f"График создан успешно и сохранен в {file_path.absolute()}. Тип: {plot_type}, точек данных: {len(df)}"
+                "message": f"График создан успешно и сохранен. ВАЖНО: покажи пользователю в ответе путь к графику 'file_path', чтобы он мог его посмотреть"
             }
             
             return json.dumps(result, ensure_ascii=False, indent=2)
@@ -80,6 +75,9 @@ class PlotManager:
                         y_field: str, group_by: Optional[str]) -> list:
         """Извлекает записи из результата Elasticsearch"""
         records = []
+        string_to_numeric_map = {}
+        numeric_counter = 1
+        
         for hit in es_result.get('hits', {}).get('hits', []):
             source = hit['_source']
             
@@ -88,12 +86,24 @@ class PlotManager:
             group_value = get_nested_value(source, group_by) if group_by and '.' in group_by else source.get(group_by) if group_by else None
             
             if x_value is not None and y_value is not None:
+                # Преобразуем строковые Y значения в числовые для графиков
+                if isinstance(y_value, str):
+                    if y_value not in string_to_numeric_map:
+                        string_to_numeric_map[y_value] = numeric_counter
+                        numeric_counter += 1
+                    y_numeric = string_to_numeric_map[y_value]
+                else:
+                    y_numeric = y_value
+                
                 records.append({
                     'x': x_value,
-                    'y': y_value,
+                    'y': y_numeric,
+                    'y_original': y_value,  # Сохраняем оригинальное значение
                     'group': group_value
                 })
         
+        # Сохраняем маппинг для использования в подписях
+        self._string_mapping = string_to_numeric_map
         return records
     
     def _create_and_save_plot(self, df, plot_type: str, x_field: str, y_field: str, 
@@ -113,24 +123,22 @@ class PlotManager:
             plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             plt.xticks(rotation=45)
         
+        # Если есть маппинг строк в числа, настраиваем подписи оси Y
+        if hasattr(self, '_string_mapping') and self._string_mapping:
+            y_ticks = list(self._string_mapping.values())
+            y_labels = list(self._string_mapping.keys())
+            plt.yticks(y_ticks, y_labels)
+        
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         
-        file_path = self._generate_filename(plot_type, title, len(df))
+        file_path = self._generate_filename(title)
         
         # Сохраняем график в файл
         plt.savefig(file_path, format='png', dpi=150, bbox_inches='tight')
-        
-        # Также сохраняем в base64 для обратной совместимости
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
-        buffer.seek(0)
-        plot_base64 = base64.b64encode(buffer.getvalue()).decode()
         plt.close()
         
-        stats = self._calculate_statistics(df, group_by)
-        
-        return plot_base64, file_path, stats
+        return file_path
     
     def _render_plot(self, df, plot_type: str, group_by: Optional[str]):
         """Отрисовывает график в зависимости от типа"""
@@ -201,20 +209,17 @@ class PlotManager:
             plt.bar(range(len(grouped)), grouped.values)
             plt.xticks(range(len(grouped)), grouped.index, rotation=45)
     
-    def _generate_filename(self, plot_type: str, title: str, data_count: int) -> Path:
+    def _generate_filename(self, title: str) -> Path:
         """Генерирует уникальное имя файла"""
         now = datetime.now()
-        year = now.strftime("%Y")
-        month = now.strftime("%m")
-        
-        params_str = f"{plot_type}_{title}_{data_count}"
-        file_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
         
         safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        safe_title = safe_title.replace(' ', '_')[:30]
+        safe_title = safe_title.replace(' ', '_')[:40]
         
-        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{safe_title}_{plot_type}_{file_hash}.png"
+        filename = f"{now.strftime('%H:%M:%S')}_{safe_title}.png"
         
+        year = now.strftime("%Y")
+        month = now.strftime("%m")
         plots_dir = self.plots_dir / year / month
         plots_dir.mkdir(parents=True, exist_ok=True)
         

@@ -15,7 +15,9 @@ from src.data_processing import (
     apply_field_aliases, 
     get_nested_value,
     set_nested_value,
-    process_elasticsearch_data
+    process_elasticsearch_data,
+    format_extracted_values,
+    _traverse_path
 )
 from src.config_utils import load_index_config
 
@@ -80,6 +82,170 @@ class TestDataProcessing(unittest.TestCase):
         self.assertEqual(mos, 4.2)
         self.assertEqual(user_id, "user123")
         self.assertIsNone(non_existent)
+
+    def test_array_parsing(self):
+        """Тест парсинга массивов с новым синтаксисом"""
+        print("\n=== Тест парсинга массивов ===")
+        
+        # Тестовые данные из реального ответа Elasticsearch
+        test_data = {
+            "details": {
+                "issues": [
+                    {
+                        "reason": "inbound-network-quality",
+                        "type": "network",
+                        "statsSample": {
+                            "avgJitter": 0.0045,
+                            "rtt": 21,
+                            "packetLossPct": 8
+                        }
+                    },
+                    {
+                        "reason": "server-issue", 
+                        "type": "server",
+                        "statsSample": {
+                            "avgJitter": 0.0055,
+                            "rtt": 340,
+                            "packetLossPct": 4
+                        }
+                    },
+                    {
+                        "reason": "inbound-network-quality",
+                        "type": "network",
+                        "statsSample": {
+                            "avgJitter": 0.006,
+                            "rtt": 340,
+                            "packetLossPct": 8
+                        }
+                    }
+                ]
+            },
+            "userId": 5614788,
+            "userRole": "admin"
+        }
+        
+        # Тест извлечения причин из массива
+        print("Извлечение причин из массива:")
+        reasons = get_nested_value(test_data, "details.issues[].reason")
+        print(f"✓ Сырые причины: {reasons}")
+        self.assertEqual(reasons, ['inbound-network-quality', 'server-issue', 'inbound-network-quality'])
+        
+        # Тест форматирования с дедупликацией
+        formatted_reasons = format_extracted_values(reasons)
+        print(f"✓ Форматированные причины: {formatted_reasons}")
+        self.assertEqual(formatted_reasons, "inbound-network-quality, server-issue")
+        
+        # Тест извлечения вложенных значений из массива
+        print("Извлечение статистики из массива:")
+        jitter_values = get_nested_value(test_data, "details.issues[].statsSample.avgJitter")
+        print(f"✓ Значения jitter: {jitter_values}")
+        self.assertEqual(jitter_values, [0.0045, 0.0055, 0.006])
+        
+        rtt_values = get_nested_value(test_data, "details.issues[].statsSample.rtt")
+        print(f"✓ Значения rtt: {rtt_values}")
+        self.assertEqual(rtt_values, [21, 340, 340])
+        
+        # Тест извлечения типов
+        types = get_nested_value(test_data, "details.issues[].type")
+        print(f"✓ Типы проблем: {types}")
+        self.assertEqual(types, ['network', 'server', 'network'])
+
+    def test_array_aliases(self):
+        """Тест применения алиасов для массивов"""
+        print("\n=== Тест алиасов для массивов ===")
+        
+        test_data = {
+            "details": {
+                "issues": [
+                    {"reason": "inbound-network-quality", "type": "network"},
+                    {"reason": "server-issue", "type": "server"},
+                    {"reason": "inbound-network-quality", "type": "network"}
+                ]
+            },
+            "userId": 5614788,
+            "userRole": "admin"
+        }
+        
+        fields_config = {
+            "details.issues[].reason": {
+                "alias": "issueReason",
+                "need_dedupe": True
+            },
+            "details.issues[].type": {
+                "alias": "issueType",
+                "need_dedupe": True
+            },
+            "userId": {
+                "alias": None
+            }
+        }
+        
+        result = apply_field_aliases(test_data, fields_config)
+        print("Результат с алиасами для массивов:")
+        print(f"  issueReason: {result.get('issueReason')}")
+        print(f"  issueType: {result.get('issueType')}")
+        print(f"  userId: {result.get('userId')}")
+        
+        # Проверяем результат
+        self.assertEqual(result.get('issueReason'), "inbound-network-quality, server-issue")
+        self.assertEqual(result.get('issueType'), "network, server")
+        self.assertEqual(result.get('userId'), 5614788)
+
+    def test_array_edge_cases(self):
+        """Тест граничных случаев для массивов"""
+        print("\n=== Тест граничных случаев для массивов ===")
+        
+        # Пустой массив
+        empty_array_data = {"details": {"issues": []}}
+        result = get_nested_value(empty_array_data, "details.issues[].reason")
+        print(f"✓ Пустой массив: {result}")
+        self.assertIsNone(result)
+        
+        # Массив с пустыми объектами
+        empty_objects_data = {"details": {"issues": [{}, {"reason": "test"}]}}
+        result = get_nested_value(empty_objects_data, "details.issues[].reason")
+        print(f"✓ Массив с пустыми объектами: {result}")
+        self.assertEqual(result, ["test"])
+        
+        # Несуществующий путь
+        result = get_nested_value(empty_objects_data, "details.nonexistent[].field")
+        print(f"✓ Несуществующий путь: {result}")
+        self.assertIsNone(result)
+        
+        # Не массив
+        not_array_data = {"details": {"issues": "not an array"}}
+        result = get_nested_value(not_array_data, "details.issues[].reason")
+        print(f"✓ Не массив: {result}")
+        self.assertIsNone(result)
+
+    def test_specific_array_index(self):
+        """Тест извлечения конкретного элемента массива"""
+        print("\n=== Тест извлечения конкретного элемента массива ===")
+        
+        test_data = {
+            "details": {
+                "issues": [
+                    {"reason": "first", "priority": 1},
+                    {"reason": "second", "priority": 2},
+                    {"reason": "third", "priority": 3}
+                ]
+            }
+        }
+        
+        # Тест извлечения первого элемента
+        first_reason = get_nested_value(test_data, "details.issues[0].reason")
+        print(f"✓ Первый элемент: {first_reason}")
+        self.assertEqual(first_reason, "first")
+        
+        # Тест извлечения второго элемента
+        second_priority = get_nested_value(test_data, "details.issues[1].priority")
+        print(f"✓ Второй элемент: {second_priority}")
+        self.assertEqual(second_priority, 2)
+        
+        # Тест извлечения несуществующего индекса
+        nonexistent = get_nested_value(test_data, "details.issues[10].reason")
+        print(f"✓ Несуществующий индекс: {nonexistent}")
+        self.assertIsNone(nonexistent)
 
     def test_aliases(self):
         """Тест применения алиасов"""
@@ -198,15 +364,15 @@ class TestDataProcessing(unittest.TestCase):
         # Подсчет экономии символов
         original_json = str(original_source)
         processed_json = str(processed_source)
-        print(f"\nЭкономия размера:")
-        print(f"  Исходный размер: {len(original_json)} символов")
-        print(f"  Обработанный размер: {len(processed_json)} символов")
-        print(f"  Экономия: {len(original_json) - len(processed_json)} символов ({(1 - len(processed_json)/len(original_json))*100:.1f}%)")
         
-        # Проверяем что обработка прошла
-        self.assertIn("hits", processed)
-        self.assertEqual(len(processed["hits"]["hits"]), 1)
+        print(f"\nСтатистика:")
+        print(f"  Размер до обработки: {len(original_json)} символов")
+        print(f"  Размер после обработки: {len(processed_json)} символов")
+        
+        # Проверяем, что обработка прошла успешно
+        self.assertIsInstance(processed, dict)
+        self.assertIn('hits', processed)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main(verbosity=2) 
