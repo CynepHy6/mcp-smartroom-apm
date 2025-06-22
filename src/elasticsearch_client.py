@@ -72,7 +72,10 @@ class ElasticsearchManager:
     def _build_query(self, filters: Dict[str, Any], size: int, from_: int, 
                     sort: Optional[List[Dict]]) -> Dict[str, Any]:
         """Строит тело запроса к Elasticsearch"""
-        if "bool" in filters or "match" in filters or "term" in filters or "range" in filters:
+        # Список поддерживаемых типов запросов Elasticsearch
+        es_query_types = ["bool", "match", "match_phrase", "term", "terms", "range", "wildcard", "regexp", "fuzzy", "prefix", "exists"]
+        
+        if any(query_type in filters for query_type in es_query_types):
             query_body = {
                 "query": filters,
                 "size": size,

@@ -64,12 +64,15 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="query_index",
-            description="Выполнить запрос к индексу Elasticsearch",
+            description="Выполнить запрос к индексу Elasticsearch с поддержкой стандартных Elasticsearch запросов",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "index": {"type": "string", "description": "Имя индекса"},
-                    "filters": {"type": "object", "description": "Фильтры запроса (term/range)"},
+                    "filters": {
+                        "type": "object", 
+                        "description": "Фильтры запроса в формате Elasticsearch. Поддерживаются: match_phrase (для поиска фраз), match (для поиска слов), term/terms (точное совпадение), range (диапазоны), wildcard (с *, но лучше использовать .keyword поля), bool (комбинированные запросы), exists, prefix, fuzzy, regexp. Примеры: {\"match_phrase\": {\"message\": \"User has been notified\"}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-1d\"}}}, {\"bool\": {\"must\": [{\"match_phrase\": {\"message\": \"error\"}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-3h\"}}}]}}"
+                    },
                     "size": {"type": "integer", "description": "Размер выборки", "default": 100},
                     "from_": {"type": "integer", "description": "Смещение", "default": 0},
                     "sort": {"type": "array", "items": {"type": "object"}, "description": "Сортировка"}

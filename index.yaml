@@ -8,11 +8,11 @@ logs_videocall:
     description: "Время события. ВАЖНО: Логи хранятся не более 20 дней. Поиск данных старше этого периода может не дать результатов."
   userId: ID пользователя
   userRole: Роль пользователя
-  "details.issues[].reason": 
+  "details.issues[].reason":
     description: Причина проблемы
     alias: issueReason
     need_dedupe: true
-  "details.summary.publisher.publisherMos.avgJitter": 
+  "details.summary.publisher.publisherMos.avgJitter":
     description: Среднее значение задержки
     alias: avgJitter
   "details.summary.publisher.publisherMos.mos":
@@ -22,5 +22,8 @@ logs_videocall:
     description: Пакеты потерянные
     alias: packetsLoss
   "details.summary.publisher.publisherMos.rtt":
-    description: Среднее время отклика  
+    description: Среднее время отклика
     alias: rtt
+
+logs_appname_wallentine:
+  message: сообщение логирования
