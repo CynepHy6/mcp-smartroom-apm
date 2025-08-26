@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 MCP сервер для безопасной работы с Elasticsearch (APM)
-Рефакторенная версия с разделением на модули
 """
 
 import os
@@ -50,7 +49,7 @@ def get_data_retention_info():
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Список доступных инструментов MCP"""
-    
+
     tools = [
         Tool(
             name="list_indexes",
@@ -70,7 +69,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "index": {"type": "string", "description": "Имя индекса"},
                     "filters": {
-                        "type": "object", 
+                        "type": "object",
                         "description": "Фильтры запроса в формате Elasticsearch. Поддерживаются: match_phrase (для поиска фраз), match (для поиска слов), term/terms (точное совпадение), range (диапазоны), wildcard (с *, но лучше использовать .keyword поля), bool (комбинированные запросы), exists, prefix, fuzzy, regexp. Примеры: {\"match_phrase\": {\"message\": \"User has been notified\"}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-1d\"}}}, {\"bool\": {\"must\": [{\"match_phrase\": {\"message\": \"error\"}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-3h\"}}}]}}"
                     },
                     "size": {"type": "integer", "description": "Размер выборки", "default": 100},
@@ -81,7 +80,7 @@ async def list_tools() -> list[Tool]:
             }
         )
     ]
-    
+
     if plot_manager.is_available():
         tools.append(
             Tool(
@@ -93,7 +92,7 @@ async def list_tools() -> list[Tool]:
                         "index": {"type": "string", "description": "Имя индекса"},
                         "filters": {"type": "object", "description": "Фильтры запроса"},
                         "plot_type": {
-                            "type": "string", 
+                            "type": "string",
                             "enum": ["line", "scatter", "bar", "mos_timeline", "metrics_comparison"],
                             "description": "Тип графика"
                         },
@@ -107,7 +106,7 @@ async def list_tools() -> list[Tool]:
                 }
             )
         )
-    
+
     return tools
 
 @server.call_tool()
@@ -120,37 +119,37 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
-            
+
         elif name == "get_data_retention_info":
             return [TextContent(type="text", text=get_data_retention_info())]
-            
+
         elif name == "query_index":
             index = arguments.get("index")
             filters = arguments.get("filters", {})
             size = arguments.get("size", 100)
             from_ = arguments.get("from_", 0)
             sort = arguments.get("sort")
-            
+
             result = await es_manager.query_index(
                 index, filters, size, from_, sort, INDEX_CONFIG
             )
-            
+
             # Обработка данных: дедупликация + алиасы
             result = process_elasticsearch_data(result, index, INDEX_CONFIG)
-            
+
             logger.info(f"Query result size: {len(str(result))} characters")
             if isinstance(result, dict) and 'hits' in result:
                 logger.info(f"Hits count: {len(result['hits']['hits'])}")
-            
+
             # Добавляем информацию о ретенции в начало ответа
             retention_info = get_data_retention_info()
             result_text = f"{retention_info}\n\n" + json.dumps(result, ensure_ascii=False, indent=2, default=str)
             return [TextContent(type="text", text=result_text)]
-            
+
         elif name == "create_plot":
             if not plot_manager.is_available():
                 return [TextContent(type="text", text="Ошибка: matplotlib/pandas не установлены")]
-            
+
             index = arguments.get("index")
             filters = arguments.get("filters", {})
             plot_type = arguments.get("plot_type")
@@ -159,28 +158,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             group_by = arguments.get("group_by")
             title = arguments.get("title", "График")
             size = arguments.get("size", 100)
-            
+
             # Получаем данные из Elasticsearch
             result = await es_manager.query_index(
                 index, filters, size, 0, [{"@timestamp": {"order": "asc"}}], INDEX_CONFIG
             )
-            
+
             # Обработка данных: дедупликация + алиасы
             result = process_elasticsearch_data(result, index, INDEX_CONFIG)
-            
+
             # Создаем график
             plot_result = await plot_manager.create_plot_from_data(
                 result, plot_type, x_field, y_field, group_by, title
             )
-            
+
             # Добавляем информацию о ретенции в начало ответа
             retention_info = get_data_retention_info()
             final_result = f"{retention_info}\n\n{plot_result}"
             return [TextContent(type="text", text=final_result)]
-            
+
         else:
             return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
-            
+
     except Exception as e:
         logger.error(f"Ошибка выполнения инструмента {name}: {e}")
         return [TextContent(type="text", text=f"Ошибка: {str(e)}")]
@@ -199,13 +198,13 @@ def show_help():
         print("  • create_plot    - Создать график по данным из Elasticsearch")
     else:
         print("  • create_plot    - НЕДОСТУПНО (нет matplotlib/pandas)")
-    
+
     print("\nИнформация о данных:")
     retention_info = get_data_retention_info()
     print(f"  {retention_info}")
-    
+
     print("\nСтруктура модулей:")
-    print("  • src/config_utils.py      - утилиты конфигурации")  
+    print("  • src/config_utils.py      - утилиты конфигурации")
     print("  • src/elasticsearch_client.py - клиент Elasticsearch")
     print("  • src/data_processing.py   - обработка данных")
     print("  • src/plotting.py          - создание графиков")
@@ -222,7 +221,7 @@ async def main():
             print(f"Неизвестный аргумент: {arg}")
             print("Используйте --help для справки")
             return
-    
+
     logger.info("Запуск рефакторенного MCP сервера для работы с Elasticsearch (APM)")
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
@@ -232,4 +231,4 @@ async def main():
         )
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

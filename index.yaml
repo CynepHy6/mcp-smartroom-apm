@@ -1,29 +1,49 @@
 logs_videocall:
-  events:
-    - tech-summary-minute: отчет по МОС за минуту
-    - webrtcIssue: проблемы с WebRTC, аудио, видео, скриншеринг
-  appSessionId: Уникальный ID сессии приложения, хэш комнаты
-  event: "Тип события: tech-summary-minute"
-  "@timestamp":
-    description: "Время события. ВАЖНО: Логи хранятся не более 20 дней. Поиск данных старше этого периода может не дать результатов."
-  userId: ID пользователя
-  userRole: Роль пользователя
-  "details.issues[].reason":
-    description: Причина проблемы
-    alias: issueReason
-    need_dedupe: true
-  "details.summary.publisher.publisherMos.avgJitter":
-    description: Среднее значение задержки
-    alias: avgJitter
-  "details.summary.publisher.publisherMos.mos":
-    description: МОС
-    alias: mos
-  "details.summary.publisher.publisherMos.packetsLoss":
-    description: Пакеты потерянные
-    alias: packetsLoss
-  "details.summary.publisher.publisherMos.rtt":
-    description: Среднее время отклика
-    alias: rtt
+    events:
+        - tech-summary-minute: отчет по МОС за минуту
+        - webrtcIssue: проблемы с WebRTC, аудио, видео, скриншеринг
+        - connectionResult: "Не удалось соединиться по видео в течение N минут"
+    appSessionId: Уникальный ID сессии приложения, хэш комнаты
+    event: "Тип события, например 'tech-summary-minute'"
+    "@timestamp":
+        description: "Время события. ВАЖНО: Логи хранятся не более 20 дней. Поиск данных старше этого периода может не дать результатов."
+    userId: ID пользователя
+    userRole: Роль пользователя
+    "details.issues[].reason":
+        description: Причина проблемы
+        alias: issueReason
+        need_dedupe: true
+    "details.summary.publisher.publisherMos.avgJitter":
+        description: Среднее значение задержки
+        alias: avgJitter
+    "details.summary.publisher.publisherMos.mos":
+        description: МОС
+        alias: mos
+    "details.summary.publisher.publisherMos.packetsLoss":
+        description: Пакеты потерянные
+        alias: packetsLoss
+    "details.summary.publisher.publisherMos.rtt":
+        description: Среднее время отклика
+        alias: rtt
+
+    "details.result":
+        description: "(connectionResult): connected|failed|timeout"
+        alias: result
+    "details.connectionTime":
+        description: "(connectionResult): время от начала до ошибки, либо успешного соединения"
+        alias: connectionTime
+    "details.source":
+        description: "(connectionResult): subscriber|publisher"
+        alias: source
+    "details.type":
+        description: "(connectionResult): camera|screen"
+        alias: type
+    "details.roomType":
+        description: "(connectionResult): personal|group|webinar|parallel|..."
+        alias: roomType
+    "details.videoServer":
+        description: "(connectionResult): видеосервер, например video02"
+        alias: videoServer
 
 logs_appname_wallentine:
-  message: сообщение логирования
+    message: сообщение логирования
