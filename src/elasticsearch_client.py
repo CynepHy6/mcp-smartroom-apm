@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class ElasticsearchManager:
     """Менеджер для работы с Elasticsearch"""
-    
+
     def __init__(self):
         self.client = AsyncElasticsearch(
             hosts=[os.getenv("APM_BASE_URL")],
@@ -23,25 +23,29 @@ class ElasticsearchManager:
     async def list_indexes(self, index_config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Список индексов и их описание"""
         result = []
-        
+
         for idx, data in index_config.items():
             fields_info = {}
             events = data.get("events", [])
             fields = data.get("fields", {})
-            
+
             # Обрабатываем поля из раздела fields
             for field_name, field_config in fields.items():
                 alias = field_config.get("alias")
+                # Используем алиас для display_name, если есть, иначе оригинальное имя
                 display_name = alias if alias else field_name
                 description = field_config.get("description", "")
-                
-                fields_info[display_name] = {
+
+                # В качестве ключа используем алиас если есть, иначе оригинальное имя
+                key_name = alias if alias else field_name
+
+                fields_info[key_name] = {
                     "original_name": field_name,
                     "description": description,
                     "alias": alias,
                     "need_dedupe": field_config.get("need_dedupe", False)
                 }
-            
+
             result.append({
                 "name": idx,
                 "fields": fields_info,
@@ -49,15 +53,21 @@ class ElasticsearchManager:
             })
         return result
 
-    async def query_index(self, index: str, filters: Dict[str, Any], size: int = 100, 
-                         from_: int = 0, sort: Optional[List[Dict]] = None, 
+    async def query_index(self, index: str, filters: Dict[str, Any], size: int = 100,
+                         from_: int = 0, sort: Optional[List[Dict]] = None,
                          index_config: Dict[str, Any] = None) -> Dict[str, Any]:
         """Выполняет запрос к индексу Elasticsearch"""
         if index_config and index not in index_config:
             raise ValueError(f"Индекс '{index}' не найден в конфигурации")
-        
+
+        # Преобразуем алиасы обратно в оригинальные имена полей
+        if index_config and index in index_config:
+            filters = self._resolve_aliases_in_filters(filters, index_config[index])
+            if sort:
+                sort = self._resolve_aliases_in_sort(sort, index_config[index])
+
         query_body = self._build_query(filters, size, from_, sort)
-        
+
         logger.info(f"Elasticsearch query to index '{index}': {query_body}")
         try:
             result = await self.client.search(index=index, body=query_body)
@@ -68,13 +78,13 @@ class ElasticsearchManager:
             raise RuntimeError("Ошибка подключения к Elasticsearch")
         except Exception as e:
             raise RuntimeError(f"Ошибка Elasticsearch: {e}")
-    
-    def _build_query(self, filters: Dict[str, Any], size: int, from_: int, 
+
+    def _build_query(self, filters: Dict[str, Any], size: int, from_: int,
                     sort: Optional[List[Dict]]) -> Dict[str, Any]:
         """Строит тело запроса к Elasticsearch"""
         # Список поддерживаемых типов запросов Elasticsearch
         es_query_types = ["bool", "match", "match_phrase", "term", "terms", "range", "wildcard", "regexp", "fuzzy", "prefix", "exists"]
-        
+
         if any(query_type in filters for query_type in es_query_types):
             query_body = {
                 "query": filters,
@@ -100,8 +110,52 @@ class ElasticsearchManager:
                     query_body["query"]["bool"]["must"].append({
                         "term": {key: value}
                     })
-        
+
         if sort:
             query_body["sort"] = sort
-            
-        return query_body 
+
+        return query_body
+
+    def _resolve_aliases_in_filters(self, filters: Dict[str, Any], index_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Преобразует алиасы полей в оригинальные имена в фильтрах"""
+        fields_config = index_config.get("fields", {})
+        alias_to_original = {}
+
+        # Создаём маппинг алиас -> оригинальное имя
+        for original_name, field_config in fields_config.items():
+            alias = field_config.get("alias")
+            if alias:
+                alias_to_original[alias] = original_name
+
+        return self._replace_field_names_recursive(filters, alias_to_original)
+
+    def _resolve_aliases_in_sort(self, sort: List[Dict], index_config: Dict[str, Any]) -> List[Dict]:
+        """Преобразует алиасы полей в оригинальные имена в сортировке"""
+        fields_config = index_config.get("fields", {})
+        alias_to_original = {}
+
+        # Создаём маппинг алиас -> оригинальное имя
+        for original_name, field_config in fields_config.items():
+            alias = field_config.get("alias")
+            if alias:
+                alias_to_original[alias] = original_name
+
+        new_sort = []
+        for sort_item in sort:
+            new_sort.append(self._replace_field_names_recursive(sort_item, alias_to_original))
+
+        return new_sort
+
+    def _replace_field_names_recursive(self, obj: Any, alias_mapping: Dict[str, str]) -> Any:
+        """Рекурсивно заменяет имена полей в объекте"""
+        if isinstance(obj, dict):
+            new_obj = {}
+            for key, value in obj.items():
+                # Заменяем ключ если он есть в маппинге
+                new_key = alias_mapping.get(key, key)
+                new_obj[new_key] = self._replace_field_names_recursive(value, alias_mapping)
+            return new_obj
+        elif isinstance(obj, list):
+            return [self._replace_field_names_recursive(item, alias_mapping) for item in obj]
+        else:
+            return obj
